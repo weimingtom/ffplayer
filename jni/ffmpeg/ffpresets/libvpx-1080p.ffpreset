@@ -1,0 +1,146 @@
+vcodec=libvpx
+g=120
+rc_lookahead=16
+quality=good
+speed=0
+profile=1
+qmax=51
+qmin=11
+slices=4
+vb=2M
+
+#ignored unless using -pass 2
+maxrate=24M
+minrate=100k
+arnr_max_frames=7
+arnr_strength=5
+arnr_type=3
+
+
+注意:建议在mac和Linux下编译
+
+1.windows先改写ffmpeg源码里的configure文件，因为Linux的回车是‘\n’，而windows的回车是‘\r\n’，
+我用UEdit32打开configure文件，然后转到十六进制状态，点菜单“替换”，将“0d 0a”（\r\n的十六进制）替换成“0a”
+2.在ffmpeg源文件夹下创建一个config.sh，内容如下：
+
+Android的GCC是不支持restrict关键字的，所以把ffmpeg源码下configure生成的config.h文件中的这一行：
+#define restrict restrict   改成 #define restrict    /*意思就是把后面的restrict去掉*/
+现在好像是av_restrict 宏的值是restrict去掉即可
+
+如果重新Configure的话记得要把这个关键字去掉。
+
+编辑libavutil/libm.h把其中的static的方法都删除
+（如果找不到libavutil/libm.h,就表明你的ffmpeg版本不是0.6而是0.5的。）
+
+分别把libavutil、libavcodec、libavformat、libavfilter、libpostproct和libswscale下的Makefile文件中下面两行删除掉：
+include $(SUBDIR)../subdir.mak
+include $(SUBDIR)../config.mak
+
+然后在ffmpeg源文件夹下新建一个av.mk文件，内容如下：（这些不用替换回车）
+# LOCAL_PATH is one of libavutil, libavcodec, libavformat, or libswscale
+
+#include $(LOCAL_PATH)/../config-$(TARGET_ARCH).mak
+include $(LOCAL_PATH)/../config.mak
+
+OBJS :=
+OBJS-yes :=
+MMX-OBJS-yes :=
+include $(LOCAL_PATH)/Makefile
+
+# collect objects
+OBJS-$(HAVE_MMX) += $(MMX-OBJS-yes)
+OBJS += $(OBJS-yes)
+
+FFNAME := lib$(NAME)
+FFLIBS := $(foreach,NAME,$(FFLIBS),lib$(NAME))
+FFCFLAGS  = -DHAVE_AV_CONFIG_H -Wno-sign-compare -Wno-switch -Wno-pointer-sign
+FFCFLAGS += -DTARGET_CONFIG=\"config-$(TARGET_ARCH).h\"
+
+ALL_S_FILES := $(wildcard $(LOCAL_PATH)/$(TARGET_ARCH)/*.S)
+ALL_S_FILES := $(addprefix $(TARGET_ARCH)/, $(notdir $(ALL_S_FILES)))
+
+ifneq ($(ALL_S_FILES),)
+ALL_S_OBJS := $(patsubst %.S,%.o,$(ALL_S_FILES))
+C_OBJS := $(filter-out $(ALL_S_OBJS),$(OBJS))
+S_OBJS := $(filter $(ALL_S_OBJS),$(OBJS))
+else
+C_OBJS := $(OBJS)
+S_OBJS :=
+endif
+
+C_FILES := $(patsubst %.o,%.c,$(C_OBJS))
+S_FILES := $(patsubst %.o,%.S,$(S_OBJS))
+
+FFFILES := $(sort $(S_FILES)) $(sort $(C_FILES))
+
+//================================mk文件
+接下来就是从jni文件夹开始写Android.mk文件，如jni文件下新建一个Android.mk，内容如下：
+
+mk 1:
+include $(all-subdir-makefiles)
+
+mk 2:
+在ffmpeg下，Android.mk内容如下：
+LOCAL_PATH := $(call my-dir)
+include $(CLEAR_VARS)
+LOCAL_SHARED_LIBRARIES := libavformat libavcodec libavutil libpostproc libswscale libavfilter
+LOCAL_MODULE := ffmpeg
+include $(BUILD_SHARED_LIBRARY)
+include $(call all-makefiles-under,$(LOCAL_PATH))
+
+mk 3:
+在ffmpeg\libavformat下，Android.mk内容如下：
+LOCAL_PATH := $(call my-dir)
+include $(CLEAR_VARS)
+include $(LOCAL_PATH)/../av.mk
+LOCAL_SRC_FILES := $(FFFILES)
+LOCAL_C_INCLUDES :=		\
+	$(LOCAL_PATH)		\
+	$(LOCAL_PATH)/..
+LOCAL_CFLAGS += $(FFCFLAGS)
+LOCAL_CFLAGS += -include "string.h" -Dipv6mr_interface=ipv6mr_ifindex
+LOCAL_LDLIBS := -lz
+LOCAL_SHARED_LIBRARIES := libavutil libavcodec
+LOCAL_MODULE := $(FFNAME)
+include $(BUILD_SHARED_LIBRARY)
+
+mk 4:
+在ffmpeg\libavcodec下，Android.mk内容如下：
+LOCAL_PATH := $(call my-dir)
+include $(CLEAR_VARS)
+include $(LOCAL_PATH)/../av.mk
+LOCAL_SRC_FILES := $(FFFILES)
+LOCAL_C_INCLUDES :=		\
+	$(LOCAL_PATH)		\
+	$(LOCAL_PATH)/..
+LOCAL_CFLAGS += $(FFCFLAGS)
+LOCAL_LDLIBS := -lz
+LOCAL_SHARED_LIBRARIES := libavutil
+LOCAL_MODULE := $(FFNAME)
+include $(BUILD_SHARED_LIBRARY)
+
+mk 5:
+在ffmpeg\libavfilter、ffmpeg\libavutil、ffmpeg\libpostproc、ffmpeg\libswscale下的Android,mk文件内容如下:
+/*最主要是下面加红那行不一样*/
+LOCAL_PATH := $(call my-dir)
+include $(CLEAR_VARS)
+include $(LOCAL_PATH)/../av.mk
+LOCAL_SRC_FILES := $(FFFILES)
+LOCAL_C_INCLUDES :=		\
+	$(LOCAL_PATH)		\
+	$(LOCAL_PATH)/..
+LOCAL_CFLAGS += $(FFCFLAGS)
+#(红色行) LOCAL_SHARED_LIBRARIES := 
+LOCAL_MODULE := $(FFNAME)
+include $(BUILD_SHARED_LIBRARY)
+
+ffmpeg\libavutil：不需要这一行，直接加#屏蔽掉。
+ffmpeg\libswscale：LOCAL_SHARED_LIBRARIES :=libavutil
+ffmpeg\libavfilter：LOCAL_SHARED_LIBRARIES :=libavutil libswscale libavcodec
+ffmpeg\libpostproc：LOCAL_SHARED_LIBRARIES :=libavutil
+
+可能编译libavdevice也是用上面这个Android.mk，然后根据提示的错误没改变红色这行就
+
+OK了。
+最后就是运行ndk-build了：
+
